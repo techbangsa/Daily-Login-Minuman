@@ -7,18 +7,21 @@ const { applyCheckin, applyRedeem, revertRedeem, buildView, dateInTimezone } = r
 const router = express.Router();
 
 // Responses are per customer: never let Shopify, the CDN or the browser cache them.
-router.use((req, res, next) => {
+const noStore = (req, res, next) => {
   res.set('Cache-Control', 'no-store, private');
   next();
-});
+};
 
-router.use(
+// Applied per route (not router.use) so this router can also be mounted at "/"
+// without turning every unknown URL into a 401.
+const guard = [
+  noStore,
   appProxyAuth({
     secret: config.shop.apiSecret,
     shopDomain: config.shop.domain,
     maxAgeSeconds: config.proxyMaxAgeSeconds,
-  })
-);
+  }),
+];
 
 const today = () => dateInTimezone(new Date(), config.shop.timezone);
 
@@ -31,12 +34,12 @@ const view = (state) =>
     voucherExpiryDays: config.loyalty.voucherExpiryDays,
   });
 
-router.get('/balance', async (req, res) => {
+router.get('/balance', guard, async (req, res) => {
   const { state } = await readState(req.proxy.customerId);
   res.json({ ok: true, data: view(state) });
 });
 
-router.post('/checkin', async (req, res) => {
+router.post('/checkin', guard, async (req, res) => {
   const result = await updateState(req.proxy.customerId, (state) =>
     applyCheckin(state, {
       today: today(),
@@ -51,7 +54,7 @@ router.post('/checkin', async (req, res) => {
   return res.json({ ok: true, reward: result.reward, data: view(result.state) });
 });
 
-router.post('/redeem', async (req, res) => {
+router.post('/redeem', guard, async (req, res) => {
   const tierId = req.body && req.body.tierId;
   const tier = config.loyalty.redeemTiers.find((t) => t.id === tierId);
   if (!tier) {

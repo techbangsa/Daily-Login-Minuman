@@ -18,8 +18,11 @@ app.get("/", (req, res) => {
 // Use the webhook routes
 app.use('/api/webhook', webhookRoutes);
 
-// Shopify App Proxy: storefront /apps/rewards/* -> /proxy/*
+// Shopify App Proxy: storefront /apps/rewards/* -> <proxy url>/*
+// Mounted twice so the proxy URL in the Dev Dashboard can be either
+// https://daily-login-minuman.vercel.app or https://daily-login-minuman.vercel.app/proxy
 app.use('/proxy', proxyRoutes);
+app.use('/', proxyRoutes);
 
 // Vercel imports the app; locally we start the server ourselves.
 if (require.main === module) {
