@@ -1,0 +1,28 @@
+# Shopify Flow trigger fired by POST /checkin (src/lib/store.js -> sendCheckinToFlow).
+# Field keys must match the payload keys sent there.
+[[extensions]]
+name = "Daily check-in completed"
+type = "flow_trigger"
+handle = "daily-checkin-completed"
+uid = "9c2b70b9-477e-1c2e-bd4c-cc22fc1f033f8c382618"
+description = "A customer claimed today's daily check-in reward. Use Points to add coins to their Growave balance."
+
+[settings]
+
+  [[settings.fields]]
+  type = "customer_reference"
+
+  [[settings.fields]]
+  type = "number_decimal"
+  key = "Points"
+  description = "Coins earned for this check-in"
+
+  [[settings.fields]]
+  type = "number_decimal"
+  key = "Cycle day"
+  description = "Day of the 7 day check-in cycle (1-7)"
+
+  [[settings.fields]]
+  type = "single_line_text_field"
+  key = "Checkin date"
+  description = "Check-in date in the shop timezone (YYYY-MM-DD)"

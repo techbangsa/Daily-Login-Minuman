@@ -7,7 +7,8 @@
     "proxy": "node scripts/proxy-request.js",
     "proxy:prod": "BASE_URL=https://daily-login-minuman.vercel.app/proxy node scripts/proxy-request.js",
     "dev": "nodemon src/index.js",
-    "start": "node src/index.js"
+    "start": "node src/index.js",
+    "deploy" : "shopify app deploy"
   },
   "keywords": [],
   "author": "",

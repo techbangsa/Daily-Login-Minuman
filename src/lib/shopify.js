@@ -5,10 +5,12 @@ const MAX_ATTEMPTS = 4;
 const TIMEOUT_MS = 10000;
 
 class ShopifyError extends Error {
-  constructor(message, details) {
+  constructor(message, details, { maybeApplied = false } = {}) {
     super(message);
     this.name = 'ShopifyError';
     this.details = details;
+    // True when a mutation may have reached Shopify even though we got no answer.
+    this.maybeApplied = maybeApplied;
   }
 }
 
@@ -40,7 +42,7 @@ async function adminGraphql(query, variables = {}) {
         signal: AbortSignal.timeout(TIMEOUT_MS),
       });
     } catch (error) {
-      lastError = new ShopifyError(`Network error calling Shopify: ${error.message}`);
+      lastError = new ShopifyError(`Network error calling Shopify: ${error.message}`, null, { maybeApplied: isMutation });
       if (isMutation) throw lastError;
       await sleep(250 * 2 ** attempt);
       continue;
@@ -55,7 +57,7 @@ async function adminGraphql(query, variables = {}) {
     }
 
     if (response.status >= 500) {
-      lastError = new ShopifyError(`Shopify API ${response.status}`, body);
+      lastError = new ShopifyError(`Shopify API ${response.status}`, body, { maybeApplied: isMutation });
       if (isMutation) throw lastError;
       await sleep(250 * 2 ** attempt);
       continue;

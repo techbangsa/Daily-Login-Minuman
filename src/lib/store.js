@@ -1,4 +1,3 @@
-const crypto = require('crypto');
 const config = require('../config');
 const { adminGraphql, ShopifyError } = require('./shopify');
 const { normalizeState } = require('./loyalty');
@@ -26,15 +25,11 @@ const WRITE_MUTATION = `mutation LoyaltyWrite($metafields: [MetafieldsSetInput!]
   }
 }`;
 
-const DISCOUNT_CREATE = `mutation RedeemCode($basicCodeDiscount: DiscountCodeBasicInput!) {
-  discountCodeBasicCreate(basicCodeDiscount: $basicCodeDiscount) {
-    codeDiscountNode {
-      id
-    }
+const FLOW_TRIGGER = `mutation CheckinFlowTrigger($handle: String!, $payload: JSON!) {
+  flowTriggerReceive(handle: $handle, payload: $payload) {
     userErrors {
       field
       message
-      code
     }
   }
 }`;
@@ -98,6 +93,7 @@ async function writeState(customerId, state, digest) {
  * Read -> mutate -> compare-and-set, retried on concurrent modification.
  * `mutate(state)` returns { state, ...extra } to write, or any object without
  * `state` to stop without writing (e.g. "already checked in").
+ * The result always carries `previous`: the state before this update.
  */
 async function updateState(customerId, mutate, attempts = 4) {
   for (let attempt = 1; attempt <= attempts; attempt += 1) {
@@ -107,7 +103,7 @@ async function updateState(customerId, mutate, attempts = 4) {
 
     try {
       await writeState(customerId, result.state, digest);
-      return result;
+      return { ...result, previous: state };
     } catch (error) {
       if (!(error instanceof ConflictError) || attempt === attempts) throw error;
     }
@@ -115,52 +111,30 @@ async function updateState(customerId, mutate, attempts = 4) {
   throw new ConflictError();
 }
 
-// No 0/O/1/I to keep codes easy to type.
-const CODE_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
-
-function generateCode() {
-  const bytes = crypto.randomBytes(8);
-  let suffix = '';
-  for (const byte of bytes) suffix += CODE_ALPHABET[byte % CODE_ALPHABET.length];
-  return `${config.loyalty.voucherCodePrefix}-${suffix}`;
-}
-
-async function createVoucher({ customerId, tier, code, now = new Date() }) {
-  const endsAt = new Date(now.getTime() + config.loyalty.voucherExpiryDays * 24 * 60 * 60 * 1000);
-  const minSubtotal = Number(tier.minSubtotal || 0);
-
-  const data = await adminGraphql(DISCOUNT_CREATE, {
-    basicCodeDiscount: {
-      title: `Daily Rewards ${tier.points} pts - customer ${customerId} - ${code}`,
-      code,
-      // Back-date a minute so a slightly fast clock never makes the code "not active yet".
-      startsAt: new Date(now.getTime() - 60 * 1000).toISOString(),
-      endsAt: endsAt.toISOString(),
-      context: { customers: { add: [customerGid(customerId)] } },
-      customerGets: {
-        value: { discountAmount: { amount: String(tier.amount), appliesOnEachItem: false } },
-        items: { all: true },
-      },
-      minimumRequirement:
-        minSubtotal > 0 ? { subtotal: { greaterThanOrEqualToSubtotal: String(minSubtotal) } } : null,
-      usageLimit: 1,
-      appliesOncePerCustomer: true,
-      combinesWith: { orderDiscounts: false, productDiscounts: true, shippingDiscounts: true },
+/**
+ * Start the "Daily check-in completed" Flow workflows for this check-in.
+ * The workflow adds `Points` to the customer's Growave balance.
+ * Payload keys must match the field keys in the trigger extension's TOML.
+ */
+async function sendCheckinToFlow({ customerId, reward, day, date }) {
+  const data = await adminGraphql(FLOW_TRIGGER, {
+    handle: config.flow.triggerHandle,
+    payload: {
+      customer_id: Number(customerId),
+      Points: reward,
+      'Cycle day': day,
+      'Checkin date': date,
     },
   });
 
-  const { codeDiscountNode, userErrors } = data.discountCodeBasicCreate;
-  if (userErrors.length || !codeDiscountNode) {
-    throw new ShopifyError('discountCodeBasicCreate failed', userErrors);
-  }
-  return { id: codeDiscountNode.id, code, endsAt: endsAt.toISOString() };
+  const { userErrors } = data.flowTriggerReceive;
+  if (userErrors.length) throw new ShopifyError('flowTriggerReceive failed', userErrors);
 }
 
 module.exports = {
   readState,
   updateState,
-  createVoucher,
-  generateCode,
+  sendCheckinToFlow,
   ConflictError,
   NotFoundError,
 };

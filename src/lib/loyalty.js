@@ -1,32 +1,27 @@
-// Pure loyalty rules: no I/O, so everything here is unit-testable.
+// Pure check-in rules: no I/O, so everything here is unit-testable.
+//
+// The metafield only remembers *when* the customer last checked in and which
+// day of the cycle that was. Points are never stored here: every check-in is
+// sent to Shopify Flow, which adds them to the customer's Growave balance.
 
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
 function emptyState() {
-  return { balance: 0, streak: 0, last_checkin: null, history: [] };
+  return { streak: 0, last_checkin: null };
 }
 
 /**
  * Coerce whatever is stored in the metafield into a valid state object.
- * Protects against manual edits in the admin or older data shapes.
+ * Drops fields from older data shapes (balance, history), so the next write
+ * cleans the metafield up.
  */
 function normalizeState(raw) {
   const state = emptyState();
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return state;
 
-  if (Number.isInteger(raw.balance) && raw.balance > 0) state.balance = raw.balance;
   if (Number.isInteger(raw.streak) && raw.streak > 0) state.streak = raw.streak;
   if (typeof raw.last_checkin === 'string' && DATE_RE.test(raw.last_checkin)) {
     state.last_checkin = raw.last_checkin;
-  }
-  if (Array.isArray(raw.history)) {
-    state.history = raw.history.filter(
-      (entry) =>
-        entry &&
-        (entry.type === 'earn' || entry.type === 'spend') &&
-        Number.isInteger(entry.amount) &&
-        typeof entry.date === 'string'
-    );
   }
   return state;
 }
@@ -48,103 +43,57 @@ function addDays(dateString, days) {
   return date.toISOString().slice(0, 10);
 }
 
-function pushHistory(history, entry, limit) {
-  return [entry, ...history].slice(0, limit);
-}
-
-/** Streak that still counts today (0 when the customer skipped a day). */
-function effectiveStreak(state, today) {
-  if (state.last_checkin === today || state.last_checkin === addDays(today, -1)) {
-    return state.streak;
-  }
-  return 0;
+/**
+ * Day of the cycle (1..cycleLength) the customer last claimed, or 0 when the
+ * streak is broken (skipped a day). Old data could count past the cycle, so
+ * it is folded back into it.
+ */
+function effectiveStreak(state, today, cycleLength) {
+  if (!state.streak) return 0;
+  if (state.last_checkin !== today && state.last_checkin !== addDays(today, -1)) return 0;
+  return ((state.streak - 1) % cycleLength) + 1;
 }
 
 /**
  * Apply today's check-in.
- * Returns { alreadyCheckedIn: true } or { state, reward }.
+ * Returns { alreadyCheckedIn: true } or { state, reward, day }.
  */
-function applyCheckin(state, { today, rewardCycle, historyLimit }) {
+function applyCheckin(state, { today, rewardCycle }) {
   if (state.last_checkin === today) {
     return { alreadyCheckedIn: true };
   }
 
-  const streak = effectiveStreak(state, today) + 1;
-  const reward = rewardCycle[(streak - 1) % rewardCycle.length];
+  const previous = effectiveStreak(state, today, rewardCycle.length);
+  // A completed cycle starts over at day 1, just like a missed day.
+  const day = previous >= rewardCycle.length ? 1 : previous + 1;
 
   return {
-    reward,
-    state: {
-      ...state,
-      balance: state.balance + reward,
-      streak,
-      last_checkin: today,
-      history: pushHistory(state.history, { type: 'earn', amount: reward, date: today }, historyLimit),
-    },
-  };
-}
-
-/**
- * Deduct points for a redeem tier.
- * Returns { insufficient: true } or { state }.
- */
-function applyRedeem(state, { tier, code, today, historyLimit }) {
-  if (state.balance < tier.points) {
-    return { insufficient: true };
-  }
-  return {
-    state: {
-      ...state,
-      balance: state.balance - tier.points,
-      history: pushHistory(
-        state.history,
-        { type: 'spend', amount: -tier.points, date: today, code },
-        historyLimit
-      ),
-    },
-  };
-}
-
-/** Undo a redeem whose discount code could not be created. */
-function revertRedeem(state, { tier, code }) {
-  const index = state.history.findIndex((entry) => entry.type === 'spend' && entry.code === code);
-  if (index === -1) return null; // Already reverted or never written.
-  return {
-    ...state,
-    balance: state.balance + tier.points,
-    history: state.history.filter((_, i) => i !== index),
+    day,
+    reward: rewardCycle[day - 1],
+    state: { streak: day, last_checkin: today },
   };
 }
 
 /** Shape returned to the storefront. */
-function buildView(state, { today, rewardCycle, redeemTiers, currency, voucherExpiryDays }) {
-  const checkedInToday = state.last_checkin === today;
-  const streak = effectiveStreak(state, today);
+function buildView(state, { today, rewardCycle }) {
   const length = rewardCycle.length;
+  const checkedInToday = state.last_checkin === today;
+  let streak = effectiveStreak(state, today, length);
 
-  // Days already completed in the current cycle, and which tile is "today".
-  const completedInCycle = checkedInToday ? ((streak - 1) % length) + 1 : streak % length;
-  const todayIndex = checkedInToday ? completedInCycle - 1 : completedInCycle;
+  // Yesterday finished the cycle: today is day 1 of a new one.
+  if (!checkedInToday && streak >= length) streak = 0;
+
+  const completedInCycle = streak;
+  const todayIndex = checkedInToday ? streak - 1 : streak;
 
   return {
-    balance: state.balance,
     streak,
     checkedInToday,
     today,
-    nextReward: checkedInToday ? rewardCycle[streak % length] : rewardCycle[todayIndex],
     cycle: rewardCycle,
     completedInCycle,
     todayIndex,
-    currency,
-    voucherExpiryDays,
-    tiers: redeemTiers.map((tier) => ({
-      id: tier.id,
-      points: tier.points,
-      amount: Number(tier.amount),
-      minSubtotal: Number(tier.minSubtotal || 0),
-      affordable: state.balance >= tier.points,
-    })),
-    history: state.history,
+    nextReward: checkedInToday ? rewardCycle[streak % length] : rewardCycle[todayIndex],
   };
 }
 
@@ -155,7 +104,5 @@ module.exports = {
   addDays,
   effectiveStreak,
   applyCheckin,
-  applyRedeem,
-  revertRedeem,
   buildView,
 };
