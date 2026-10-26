@@ -59,7 +59,7 @@ router.post('/checkin', guard, async (req, res) => {
         reward: result.reward,
         error,
       });
-      return res.status(502).json({ ok: false, error: 'reward_pending', data: view(result.state) });
+      return res.status(202).json({ ok: false, error: 'reward_pending', data: view(result.state) });
     }
 
     console.error('[checkin] Flow trigger failed, undoing check-in', { customerId, date, error });
@@ -71,11 +71,14 @@ router.post('/checkin', guard, async (req, res) => {
       // Needs manual fix: day is marked claimed but no points were sent.
       console.error('[checkin] UNDO FAILED - manual action needed', { customerId, date, undoError });
     }
-    return res.status(502).json({ ok: false, error: 'reward_failed' });
+    return res.status(424).json({ ok: false, error: 'reward_failed' });
   }
 
   return res.json({ ok: true, reward: result.reward, data: view(result.state) });
 });
+
+// Expected failures use 2xx/4xx on purpose: for 5xx responses the App Proxy
+// replaces our JSON with the storefront's HTML error page, hiding the reason.
 
 // Express 5 forwards rejected promises from async handlers here.
 // eslint-disable-next-line no-unused-vars

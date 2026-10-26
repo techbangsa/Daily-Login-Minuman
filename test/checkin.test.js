@@ -96,7 +96,7 @@ test('a rejected Flow trigger undoes the check-in so the customer can retry', as
   fake.flowError = new shopify.ShopifyError('flowTriggerReceive failed', [{ message: 'Invalid handle' }]);
 
   const { status, body } = await call('checkin', 'POST');
-  assert.equal(status, 502);
+  assert.equal(status, 424);
   assert.equal(body.error, 'reward_failed');
   assert.deepEqual(fake.metafield, { streak: 0, last_checkin: null });
 
@@ -110,7 +110,7 @@ test('an unknown Flow result keeps the day claimed so points are never sent twic
   fake.flowError = new shopify.ShopifyError('Network error calling Shopify: reset', null, { maybeApplied: true });
 
   const { status, body } = await call('checkin', 'POST');
-  assert.equal(status, 502);
+  assert.equal(status, 202);
   assert.equal(body.error, 'reward_pending');
   assert.equal(body.data.checkedInToday, true);
   assert.equal(fake.metafield.streak, 1);
