@@ -25,6 +25,12 @@ const WRITE_MUTATION = `mutation LoyaltyWrite($metafields: [MetafieldsSetInput!]
   }
 }`;
 
+const CUSTOMER_BY_EMAIL = `query CustomerByEmail($email: String!) {
+  customerByIdentifier(identifier: { emailAddress: $email }) {
+    id
+  }
+}`;
+
 const FLOW_TRIGGER = `mutation CheckinFlowTrigger($handle: String!, $payload: JSON!) {
   flowTriggerReceive(handle: $handle, payload: $payload) {
     userErrors {
@@ -66,6 +72,13 @@ async function readState(customerId) {
     // null digest = "metafield must not exist yet" for compare-and-set.
     digest: metafield ? metafield.compareDigest : null,
   };
+}
+
+/** Numeric customer ID for an email, so mobile can identify customers the same way Growave does. */
+async function findCustomerIdByEmail(email) {
+  const data = await adminGraphql(CUSTOMER_BY_EMAIL, { email });
+  if (!data.customerByIdentifier) throw new NotFoundError(`No customer with email ${email}`);
+  return data.customerByIdentifier.id.split('/').pop();
 }
 
 async function writeState(customerId, state, digest) {
@@ -134,6 +147,7 @@ async function sendCheckinToFlow({ customerId, reward, day, date }) {
 module.exports = {
   readState,
   updateState,
+  findCustomerIdByEmail,
   sendCheckinToFlow,
   ConflictError,
   NotFoundError,

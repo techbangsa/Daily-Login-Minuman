@@ -74,7 +74,7 @@ function appProxyAuth(options) {
     if (!result.ok) {
       return res.status(result.status).json({ ok: false, error: result.error });
     }
-    req.proxy = { shop: result.shop, customerId: result.customerId };
+    req.customerId = result.customerId;
     return next();
   };
 }

@@ -56,6 +56,12 @@ const config = {
     triggerHandle: process.env.FLOW_TRIGGER_HANDLE || 'daily-checkin-completed',
   },
 
+  // Shared token the mobile app sends as "Authorization: Bearer <token>" on /mobile/*.
+  // Unset = mobile endpoints answer 503 mobile_api_disabled.
+  mobile: {
+    apiToken: process.env.MOBILE_API_TOKEN || '',
+  },
+
   // App proxy requests older than this are rejected (replay protection).
   proxyMaxAgeSeconds: intFromEnv('PROXY_MAX_AGE_SECONDS', 300),
 };

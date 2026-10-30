@@ -31,6 +31,10 @@ Header "🪙 1,050" + "Your total rewards" ◄────┘ widget Growave (gw
 
 `/balance` masih ada sebagai alias `/status` untuk halaman yang masih memuat script lama.
 
+Mobile app memakai `GET /mobile/status` dan `POST /mobile/checkin` (response sama, data sama dengan web). Auth pakai
+`Authorization: Bearer <MOBILE_API_TOKEN>` + `customerId` atau `email`. Dokumentasi untuk vendor mobile:
+`docs/API-Daily-Login.md` / `.pdf`.
+
 ## Setup
 
 ### 1. Deploy Flow trigger extension

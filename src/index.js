@@ -3,6 +3,7 @@ const config = require('./config');
 const express = require('express');
 const webhookRoutes = require('./routes/webhook');
 const proxyRoutes = require('./routes/proxy');
+const mobileRoutes = require('./routes/mobile');
 
 const app = express();
 
@@ -17,6 +18,10 @@ app.get("/", (req, res) => {
 
 // Use the webhook routes
 app.use('/api/webhook', webhookRoutes);
+
+// Mobile app: same check-in data as the storefront, authenticated with MOBILE_API_TOKEN.
+// Mounted before the "/" proxy mount below.
+app.use('/mobile', mobileRoutes);
 
 // Shopify App Proxy: storefront /apps/rewards/* -> <proxy url>/*
 // Mounted twice so the proxy URL in the Dev Dashboard can be either
