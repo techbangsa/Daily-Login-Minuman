@@ -1,0 +1,404 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Daily Login Architecture</title>
+<!--
+  HANDOVER DOC — Minuman Daily Login backend.
+  Untuk agent / developer: semua diagram di bawah ditulis sebagai Mermaid source di dalam
+  <pre class="mermaid">, jadi bisa dibaca langsung dari file ini tanpa render.
+  Buka di browser untuk melihat diagramnya (butuh internet untuk memuat Mermaid dari jsDelivr).
+
+  Ringkasan 1 paragraf:
+  Request selalu dimulai dari client (popup theme lewat Shopify App Proxy, atau mobile app lewat /mobile/*).
+  Backend Express (Vercel) memverifikasi identitas customer, menandai hari ini di customer metafield
+  custom.loyalty_data { streak, last_checkin } dengan compare-and-set, lalu memanggil Admin GraphQL
+  flowTriggerReceive (handle "daily-checkin-completed"). Workflow Shopify Flow yang menambah poin di Growave.
+  Backend TIDAK pernah memanggil API Growave dan TIDAK menyimpan saldo poin.
+  Satu-satunya API eksternal yang di-hit backend: https://<SHOPIFY_STORE_DOMAIN>/admin/api/<version>/graphql.json
+-->
+<style>
+  :root {
+    --bg: #ffffff; --fg: #1c2230; --muted: #5d6677; --line: #dfe3ea; --soft: #f5f7fa;
+    --accent: #2563eb; --warn-bg: #fff8ee; --warn-line: #f5c58a; --warn-fg: #b45309;
+    --code-bg: #f1f4f8;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #12151c; --fg: #e4e8ef; --muted: #9aa3b2; --line: #2c3340; --soft: #1a1f29;
+      --accent: #7aa7ff; --warn-bg: #2a2114; --warn-line: #6b4f22; --warn-fg: #f5b971;
+      --code-bg: #1f2530;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #12151c; --fg: #e4e8ef; --muted: #9aa3b2; --line: #2c3340; --soft: #1a1f29;
+    --accent: #7aa7ff; --warn-bg: #2a2114; --warn-line: #6b4f22; --warn-fg: #f5b971;
+    --code-bg: #1f2530;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--fg); font: 15px/1.6 -apple-system, "Segoe UI", Helvetica, Arial, sans-serif; }
+  .wrap { max-width: 980px; margin: 0 auto; padding: 32px 16px 64px; }
+  h1 { font-size: 28px; margin: 0 0 4px; letter-spacing: -0.3px; }
+  .sub { color: var(--muted); margin: 0 0 20px; }
+  h2 { font-size: 20px; margin: 40px 0 10px; padding-bottom: 6px; border-bottom: 1px solid var(--line); }
+  h3 { font-size: 16px; margin: 22px 0 6px; }
+  a { color: var(--accent); }
+  code { font: 13px/1.4 Menlo, Consolas, monospace; background: var(--code-bg); padding: 1px 5px; border-radius: 4px; }
+  pre.code { font: 13px/1.5 Menlo, Consolas, monospace; background: var(--code-bg); padding: 12px 14px; border-radius: 8px; overflow-x: auto; }
+  .tldr { border-left: 4px solid var(--accent); background: var(--soft); padding: 12px 16px; border-radius: 0 8px 8px 0; }
+  .warn { border: 1px solid var(--warn-line); background: var(--warn-bg); padding: 12px 16px; border-radius: 8px; margin: 12px 0; }
+  .warn strong:first-child { color: var(--warn-fg); }
+  .diagram { border: 1px solid var(--line); border-radius: 10px; padding: 16px; margin: 12px 0 8px; overflow-x: auto; background: var(--bg); }
+  pre.mermaid { margin: 0; text-align: center; background: transparent; }
+  .note { color: var(--muted); font-size: 13.5px; }
+  .table-wrap { overflow-x: auto; }
+  table { width: 100%; border-collapse: collapse; margin: 10px 0; font-size: 14px; }
+  th, td { border: 1px solid var(--line); padding: 7px 10px; text-align: left; vertical-align: top; }
+  th { background: var(--soft); }
+  nav.toc { background: var(--soft); border-radius: 8px; padding: 10px 16px; margin: 20px 0; }
+  nav.toc ol { margin: 4px 0; padding-left: 20px; columns: 2; column-gap: 32px; }
+  @media (max-width: 640px) { nav.toc ol { columns: 1; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>Minuman Daily Login: Arsitektur &amp; Alur</h1>
+<p class="sub">Dokumen handover · backend Express di Vercel · Shopify App Proxy + Mobile API → Shopify Flow → Growave</p>
+
+<div class="tldr">
+  <strong>Ringkasnya:</strong> request selalu <strong>dimulai dari client</strong>, yaitu popup theme (lewat Shopify App Proxy) atau mobile app (lewat <code>/mobile/*</code>), bukan dari Flow.
+  Backend menandai "hari ini sudah diklaim" di customer metafield, lalu <strong>memicu Shopify Flow</strong>.
+  Workflow Flow yang menambah poin di <strong>Growave</strong>. Backend <strong>tidak pernah</strong> memanggil API Growave dan tidak menyimpan saldo.
+  Satu-satunya API eksternal yang di-hit backend adalah <strong>Shopify Admin GraphQL</strong>.
+</div>
+
+<nav class="toc">
+  <strong>Isi</strong>
+  <ol>
+    <li><a href="#arsitektur">Arsitektur</a></li>
+    <li><a href="#seq-web">Sequence: check-in dari web</a></li>
+    <li><a href="#seq-mobile">Sequence: check-in dari mobile</a></li>
+    <li><a href="#keputusan">Logika <code>POST /checkin</code> &amp; error</a></li>
+    <li><a href="#siklus">Aturan siklus 7 hari</a></li>
+    <li><a href="#endpoint">Endpoint &amp; autentikasi</a></li>
+    <li><a href="#api">API yang di-hit</a></li>
+    <li><a href="#flow">Konfigurasi Shopify Flow</a></li>
+    <li><a href="#env">Environment variables</a></li>
+    <li><a href="#gotcha">Hal penting / jebakan</a></li>
+    <li><a href="#file">Peta file</a></li>
+    <li><a href="#dev">Development &amp; deploy</a></li>
+  </ol>
+</nav>
+
+<!-- ============================================================ -->
+<h2 id="arsitektur">1. Arsitektur</h2>
+<p>Dua channel (web dan mobile) masuk ke <strong>router check-in yang sama</strong> (<code>src/routes/checkin.js</code>). Yang berbeda hanya cara autentikasinya. Karena itu, data check-in juga sama: klaim di web berarti hari itu sudah diklaim di mobile, dan sebaliknya.</p>
+<div class="diagram">
+<pre class="mermaid">
+flowchart TB
+  subgraph Client
+    W["Popup theme<br/>(storefront)"]
+    M["Mobile app"]
+  end
+
+  subgraph Shopify
+    P["App Proxy<br/>/apps/rewards/*"]
+    A[("Admin GraphQL API<br/>customer metafield<br/>custom.loyalty_data")]
+    F["Shopify Flow<br/>trigger: Daily check-in completed"]
+  end
+
+  subgraph Vercel["Backend (Vercel, Express)"]
+    PA["appProxyAuth<br/>HMAC signature"]
+    MA["mobileAuth<br/>Bearer MOBILE_API_TOKEN"]
+    R["createCheckinRouter<br/>GET /status · POST /checkin"]
+  end
+
+  G["Growave<br/>saldo poin"]
+
+  W -- "GET /status, POST /checkin" --> P
+  P -- "+ logged_in_customer_id + signature" --> PA
+  M -- "GET /mobile/status, POST /mobile/checkin" --> MA
+  PA --> R
+  MA --> R
+  R -- "read / metafieldsSet / flowTriggerReceive" --> A
+  A -. "async" .-> F
+  F -- "Update customer points balance" --> G
+  W -. "widget Growave (tampil saldo)" .-> G
+  M -. "baca saldo dari Growave" .-> G
+</pre>
+</div>
+<p class="note">Garis putus-putus berarti proses async atau hanya membaca saldo. Saldo poin tidak pernah lewat backend ini.</p>
+
+<!-- ============================================================ -->
+<h2 id="seq-web">2. Sequence: check-in dari web (App Proxy)</h2>
+<div class="diagram">
+<pre class="mermaid">
+sequenceDiagram
+  autonumber
+  participant T as Popup theme (customer)
+  participant P as Shopify App Proxy
+  participant B as Backend (Vercel)
+  participant A as Admin GraphQL
+  participant F as Shopify Flow
+  participant G as Growave
+
+  Note over T: customer klik "Check in"
+  T->>P: POST /apps/rewards/checkin
+  P->>B: POST /proxy/checkin<br/>+ shop, logged_in_customer_id,<br/>timestamp, signature
+  B->>B: appProxyAuth<br/>cek HMAC, shop, timestamp max 300 dtk, login
+  B->>A: query customer.metafield(custom.loyalty_data)
+  A-->>B: streak, last_checkin, compareDigest
+  B->>B: applyCheckin: hitung day dan reward
+  B->>A: metafieldsSet (compareDigest)
+  A-->>B: OK (atau STALE_OBJECT lalu retry)
+  B->>A: flowTriggerReceive<br/>handle daily-checkin-completed
+  A-->>B: userErrors kosong (trigger diterima)
+  B-->>P: 200 ok, reward, data
+  P-->>T: 200 ok, reward, data
+  Note over A,G: Async, di luar backend
+  A-)F: jalankan workflow
+  F->>G: Update customer points balance<br/>(+Points, cari by email)
+  T->>G: widget Growave refresh saldo
+</pre>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="seq-mobile">3. Sequence: check-in dari mobile</h2>
+<p>Bedanya dengan web hanya di bagian autentikasi. Setelah <code>req.customerId</code> terisi, alurnya identik.</p>
+<div class="diagram">
+<pre class="mermaid">
+sequenceDiagram
+  autonumber
+  participant M as Mobile app
+  participant B as Backend (Vercel)
+  participant A as Admin GraphQL
+  participant F as Shopify Flow
+  participant G as Growave
+
+  M->>B: POST /mobile/checkin<br/>Authorization: Bearer token<br/>body: customerId atau email
+  B->>B: mobileAuth<br/>token server kosong = 503, token salah = 401
+  alt body berisi customerId (numeric atau GID)
+    B->>B: parseCustomerId
+  else body hanya berisi email
+    B->>A: customerByIdentifier(emailAddress)
+    A-->>B: gid://shopify/Customer/ID<br/>(null = 404)
+  end
+  Note over B,A: Sama persis dengan web mulai dari sini
+  B->>A: read metafield, metafieldsSet,<br/>flowTriggerReceive
+  B-->>M: 200 / 202 / 409 / 424<br/>(format sama dengan web)
+  A-)F: jalankan workflow
+  F->>G: +Points
+  M->>G: refresh saldo beberapa detik kemudian
+</pre>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="keputusan">4. Logika <code>POST /checkin</code> &amp; penanganan error</h2>
+<p>Urutannya sengaja dibuat <strong>"tandai dulu, baru kirim poin"</strong>, supaya satu hari tidak pernah menghasilkan poin dua kali (<code>src/routes/checkin.js</code>).</p>
+<div class="diagram">
+<pre class="mermaid">
+flowchart TD
+  S(["POST /checkin"]) --> AU{"Auth lolos?"}
+  AU -- "tidak" --> EA["400 / 401 / 403 / 503"]
+  AU -- "ya" --> RD["readState: baca metafield + compareDigest"]
+  RD --> NF{"Customer ada?"}
+  NF -- "tidak" --> E404["404 customer_not_found"]
+  NF -- "ya" --> AC{"last_checkin == hari ini?"}
+  AC -- "ya" --> E409["409 already_checked_in + data"]
+  AC -- "tidak" --> WR["metafieldsSet dengan compareDigest"]
+  WR --> ST{"STALE_OBJECT?"}
+  ST -- "ya, total maks 4 percobaan" --> RD
+  ST -- "masih konflik" --> EB["409 busy_try_again"]
+  ST -- "tidak" --> FT["flowTriggerReceive"]
+  FT --> RS{"Hasil"}
+  RS -- "userErrors kosong" --> OK["200 ok + reward + data"]
+  RS -- "network error / 5xx<br/>(maybeApplied)" --> P202["202 reward_pending<br/>hari TETAP tercatat"]
+  RS -- "userErrors / 4xx / throttled<br/>(pasti tidak sampai)" --> UN["rollback metafield ke state sebelumnya"]
+  UN --> E424["424 reward_failed<br/>customer bisa coba lagi"]
+  UN -. "rollback gagal" .-> LOG["log: UNDO FAILED - manual action needed"]
+</pre>
+</div>
+<div class="table-wrap">
+<table>
+  <tr><th>HTTP</th><th><code>error</code></th><th>Ada <code>data</code>?</th><th>Metafield</th><th>Arti</th></tr>
+  <tr><td>200</td><td>–</td><td>ya</td><td>tercatat</td><td>Sukses. Poin dikirim ke Flow.</td></tr>
+  <tr><td>202</td><td><code>reward_pending</code></td><td>ya</td><td>tercatat</td><td>Hasil Flow tidak pasti. Jangan retry, cek Flow Run history.</td></tr>
+  <tr><td>409</td><td><code>already_checked_in</code></td><td>ya</td><td>tidak berubah</td><td>Hari ini sudah diklaim (dari web atau mobile).</td></tr>
+  <tr><td>409</td><td><code>busy_try_again</code></td><td>tidak</td><td>tidak berubah</td><td>Konflik compare-and-set berulang.</td></tr>
+  <tr><td>424</td><td><code>reward_failed</code></td><td>tidak</td><td>di-rollback</td><td>Flow menolak trigger (handle salah, extension belum di-deploy).</td></tr>
+  <tr><td>404</td><td><code>customer_not_found</code></td><td>tidak</td><td>–</td><td>ID atau email tidak ada di Shopify.</td></tr>
+  <tr><td>400</td><td><code>customer_required</code>, <code>invalid_customer</code>, <code>invalid_email</code></td><td>tidak</td><td>–</td><td>Mobile: input customer salah. Web: <code>invalid_customer</code>.</td></tr>
+  <tr><td>401</td><td><code>invalid_signature</code>, <code>expired_request</code>, <code>login_required</code>, <code>token_required</code>, <code>invalid_token</code></td><td>tidak</td><td>–</td><td>Autentikasi gagal.</td></tr>
+  <tr><td>403</td><td><code>unknown_shop</code></td><td>tidak</td><td>–</td><td>Web: domain shop di request tidak cocok.</td></tr>
+  <tr><td>503</td><td><code>mobile_api_disabled</code></td><td>tidak</td><td>–</td><td>Mobile: <code>MOBILE_API_TOKEN</code> belum di-set di server.</td></tr>
+  <tr><td>500</td><td><code>server_error</code></td><td>tidak</td><td>–</td><td>Error tak terduga, lihat log Vercel.</td></tr>
+</table>
+</div>
+<p class="note">Error yang sudah diperkirakan sengaja dibalas dengan 2xx/4xx. Kalau backend membalas 5xx, App Proxy mengganti JSON-nya dengan halaman error HTML storefront.</p>
+
+<!-- ============================================================ -->
+<h2 id="siklus">5. Aturan siklus 7 hari</h2>
+<p>Logika murni tanpa I/O ada di <code>src/lib/loyalty.js</code>. Tanggal dihitung di timezone toko (<code>SHOP_TIMEZONE</code>, default <code>Asia/Jakarta</code>), jadi pergantian hari terjadi pukul 00:00 WIB.</p>
+<div class="diagram">
+<pre class="mermaid">
+flowchart LR
+  L{"last_checkin"} -- "= hari ini" --> X["sudah diklaim (409)"]
+  L -- "= kemarin" --> Y{"streak terakhir = 7?"}
+  Y -- "ya" --> D1["day = 1 (siklus baru)"]
+  Y -- "tidak" --> DN["day = streak + 1"]
+  L -- "lebih lama / belum pernah" --> D1b["day = 1 (streak putus)"]
+  D1 --> RW["reward = REWARD_CYCLE[day - 1]"]
+  DN --> RW
+  D1b --> RW
+  RW --> SV["simpan { streak: day, last_checkin: hari ini }"]
+</pre>
+</div>
+<div class="table-wrap">
+<table>
+  <tr><th>Day</th><td>1</td><td>2</td><td>3</td><td>4</td><td>5</td><td>6</td><td>7</td></tr>
+  <tr><th>Poin (default <code>REWARD_CYCLE</code>)</th><td>10</td><td>10</td><td>15</td><td>15</td><td>20</td><td>20</td><td>50</td></tr>
+</table>
+</div>
+<p>Isi metafield <code>custom.loyalty_data</code> (type <code>json</code>) hanya <code>{ "streak": 3, "last_checkin": "2026-11-16" }</code>. Field lama seperti <code>balance</code> atau <code>history</code> dibuang otomatis oleh <code>normalizeState</code> saat penulisan berikutnya.</p>
+
+<!-- ============================================================ -->
+<h2 id="endpoint">6. Endpoint &amp; autentikasi</h2>
+<div class="table-wrap">
+<table>
+  <tr><th>Channel</th><th>Path di backend</th><th>Dipanggil dari</th><th>Identitas customer</th></tr>
+  <tr><td>Web</td><td><code>GET /status</code> (alias lama <code>/balance</code>)<br><code>POST /checkin</code><br>Dipasang di <code>/proxy/*</code> dan <code>/*</code></td><td><code>https://&lt;toko&gt;/apps/rewards/*</code> lewat App Proxy</td><td><code>logged_in_customer_id</code> dari query yang ditandatangani Shopify (HMAC-SHA256 dengan <code>SHOPIFY_API_SECRET</code>)</td></tr>
+  <tr><td>Mobile</td><td><code>GET /mobile/status</code><br><code>POST /mobile/checkin</code></td><td>Langsung ke <code>https://daily-login-minuman.vercel.app</code></td><td><code>Authorization: Bearer &lt;MOBILE_API_TOKEN&gt;</code> + <code>customerId</code> atau <code>email</code> (query untuk GET, JSON body untuk POST)</td></tr>
+  <tr><td>Lain</td><td><code>GET /</code>, <code>GET /api/webhook</code></td><td>–</td><td>Health check saja</td></tr>
+</table>
+</div>
+<p>Response <code>data</code> sama di kedua channel: <code>streak</code>, <code>checkedInToday</code>, <code>today</code>, <code>cycle</code>, <code>completedInCycle</code>, <code>todayIndex</code>, <code>nextReward</code>. Spesifikasi lengkap untuk vendor mobile ada di <a href="API-Daily-Login.md"><code>docs/API-Daily-Login.md</code></a>.</p>
+
+<!-- ============================================================ -->
+<h2 id="api">7. API yang di-hit, dan oleh siapa</h2>
+<div class="table-wrap">
+<table>
+  <tr><th>Pemanggil</th><th>Tujuan</th><th>Operasi</th><th>Fungsi</th></tr>
+  <tr><td>Theme</td><td>App Proxy</td><td><code>/apps/rewards/status</code>, <code>/apps/rewards/checkin</code></td><td>Popup check-in</td></tr>
+  <tr><td>App Proxy</td><td>Backend</td><td><code>https://daily-login-minuman.vercel.app/proxy/*</code></td><td>Meneruskan request + signature</td></tr>
+  <tr><td>Mobile app</td><td>Backend</td><td><code>/mobile/status</code>, <code>/mobile/checkin</code></td><td>Check-in dari app</td></tr>
+  <tr><td>Backend</td><td>Admin GraphQL</td><td><code>customer { metafield }</code></td><td>Baca status</td></tr>
+  <tr><td>Backend</td><td>Admin GraphQL</td><td><code>customerByIdentifier(emailAddress)</code></td><td>Mobile: cari customer dari email</td></tr>
+  <tr><td>Backend</td><td>Admin GraphQL</td><td><code>metafieldsSet</code> (+ <code>compareDigest</code>)</td><td>Tandai hari ini</td></tr>
+  <tr><td>Backend</td><td>Admin GraphQL</td><td><code>flowTriggerReceive</code></td><td>Memicu workflow Flow</td></tr>
+  <tr><td>Shopify Flow</td><td>Growave</td><td>Action "Update customer points balance"</td><td>Menambah poin</td></tr>
+  <tr><td>Theme / mobile</td><td>Growave</td><td>Widget / API Growave</td><td>Menampilkan saldo</td></tr>
+</table>
+</div>
+<p>Endpoint Admin API: <code>POST https://&lt;SHOPIFY_STORE_DOMAIN&gt;/admin/api/&lt;SHOPIFY_API_VERSION&gt;/graphql.json</code> dengan header <code>X-Shopify-Access-Token: &lt;SHOPIFY_ADMIN_API&gt;</code>. Client-nya ada di <code>src/lib/shopify.js</code>: timeout 10 detik, maksimal 4 percobaan. Query di-retry saat throttled, 5xx, atau network error. Mutation hanya di-retry saat throttled, supaya penulisan tidak pernah terjadi dua kali.</p>
+
+<h3>Payload <code>flowTriggerReceive</code></h3>
+<pre class="code">mutation {
+  flowTriggerReceive(
+    handle: "daily-checkin-completed",
+    payload: {
+      "customer_id":  7712345678901,   # -> field customer_reference, Flow mengisi objek customer
+      "Points":       15,
+      "Cycle day":    3,
+      "Checkin date": "2026-11-16"
+    }
+  ) { userErrors { field message } }
+}</pre>
+<p>Key payload <strong>harus sama persis</strong> dengan field di <code>extensions/daily-checkin-completed/shopify.extension.toml</code>. Kalau field diubah di salah satu tempat, ubah juga di tempat lainnya, lalu jalankan <code>shopify app deploy</code>.</p>
+
+<!-- ============================================================ -->
+<h2 id="flow">8. Konfigurasi Shopify Flow</h2>
+<p>Bagian ini <strong>tidak ada di kode</strong>, melainkan dikonfigurasi manual di admin Shopify.</p>
+<div class="diagram">
+<pre class="mermaid">
+flowchart LR
+  T["Trigger<br/>Daily check-in completed<br/>(app Minuman-Daily-Login)"] --> AC["Action<br/>Growave: Update customer points balance"]
+  AC --> P1["Customer: customer.email"]
+  AC --> P2["Balance delta: Points"]
+  AC --> P3["Reason: Daily check-in day + Cycle day"]
+</pre>
+</div>
+<p>Alternatif tanpa action Growave: action <strong>Send HTTP request</strong> ke <code>POST https://api.growave.io/v2/customers/updateBalance</code>. Cara ini butuh Growave API (plan Plus) dan token OAuth yang punya masa berlaku. Lihat <code>README.md</code>.</p>
+
+<!-- ============================================================ -->
+<h2 id="env">9. Environment variables</h2>
+<div class="table-wrap">
+<table>
+  <tr><th>Nama</th><th>Wajib</th><th>Default</th><th>Fungsi</th></tr>
+  <tr><td><code>SHOPIFY_STORE_DOMAIN</code></td><td>ya</td><td>–</td><td><code>minumancom.myshopify.com</code>, dipakai untuk endpoint Admin API dan cek <code>shop</code> di App Proxy</td></tr>
+  <tr><td><code>SHOPIFY_ADMIN_API</code></td><td>ya</td><td>–</td><td>Admin token dari app yang <strong>sama</strong> dengan pemilik Flow trigger extension</td></tr>
+  <tr><td><code>SHOPIFY_API_SECRET</code></td><td>ya</td><td>–</td><td>Client secret app, untuk verifikasi signature App Proxy</td></tr>
+  <tr><td><code>MOBILE_API_TOKEN</code></td><td>tidak</td><td>kosong</td><td>Bearer token mobile. Kalau kosong, <code>/mobile/*</code> membalas 503</td></tr>
+  <tr><td><code>SHOPIFY_API_VERSION</code></td><td>tidak</td><td><code>2026-10</code></td><td>Versi Admin API</td></tr>
+  <tr><td><code>SHOP_TIMEZONE</code></td><td>tidak</td><td><code>Asia/Jakarta</code></td><td>Penentu "hari ini"</td></tr>
+  <tr><td><code>LOYALTY_NAMESPACE</code> / <code>LOYALTY_KEY</code></td><td>tidak</td><td><code>custom</code> / <code>loyalty_data</code></td><td>Lokasi metafield</td></tr>
+  <tr><td><code>REWARD_CYCLE</code></td><td>tidak</td><td><code>10,10,15,15,20,20,50</code></td><td>Poin per hari. Harus sama dengan setting "Coins per day" di section theme</td></tr>
+  <tr><td><code>FLOW_TRIGGER_HANDLE</code></td><td>tidak</td><td><code>daily-checkin-completed</code></td><td>Handle extension Flow trigger</td></tr>
+  <tr><td><code>PROXY_MAX_AGE_SECONDS</code></td><td>tidak</td><td><code>300</code></td><td>Umur maksimum request App Proxy (proteksi replay)</td></tr>
+</table>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="gotcha">10. Hal penting / jebakan</h2>
+
+<div class="warn"><strong>Proses ke Growave berjalan fire-and-forget.</strong> Respons 200 hanya berarti Flow <em>menerima</em> trigger. Kalau step Growave gagal (paling sering karena customer <strong>tidak punya email</strong>), hari itu tetap tercatat dan poin tidak masuk. Kegagalan ini hanya terlihat di <strong>Shopify Flow → Run history</strong>, karena backend tidak mendapat callback.</div>
+
+<div class="warn"><strong>Respons 202 <code>reward_pending</code> butuh pengecekan manual.</strong> Cek Flow Run history untuk customer dan tanggal tersebut. Kalau workflow tidak jalan, tambahkan poin manual di Growave. Log Vercel <code>[checkin] Flow trigger result unknown</code> dan <code>UNDO FAILED</code> juga perlu dipantau.</div>
+
+<div class="warn"><strong>Token mobile berlaku untuk semua customer.</strong> <code>MOBILE_API_TOKEN</code> adalah satu token bersama, dan siapa pun yang memegangnya bisa klaim check-in atas nama <code>customerId</code> atau email mana saja. Token yang tertanam di app mobile bisa diekstrak. Jaga kerahasiaannya, rotasi kalau bocor, dan pertimbangkan auth per-customer (misalnya Customer Account API token) kalau risikonya tidak bisa diterima.</div>
+
+<div class="warn"><strong>Flow trigger harus satu app dengan token dan App Proxy.</strong> Extension di <code>extensions/daily-checkin-completed</code> harus di-deploy ke app yang memiliki <code>SHOPIFY_ADMIN_API</code>. Custom app Flow trigger hanya jalan di Shopify Plus.</div>
+
+<div class="warn"><strong>Testing memicu poin sungguhan.</strong> <code>npm run proxy -- checkin &lt;id&gt;</code> dan <code>POST /mobile/checkin</code> memicu Flow yang asli, sehingga poin Growave customer tersebut benar-benar bertambah.</div>
+
+<div class="warn"><strong>Saldo poin tidak ada di backend.</strong> <code>/status</code> hanya mengembalikan posisi siklus. Saldo selalu dibaca dari Growave, baik oleh widget di theme maupun oleh mobile app.</div>
+
+<!-- ============================================================ -->
+<h2 id="file">11. Peta file</h2>
+<div class="table-wrap">
+<table>
+  <tr><th>File</th><th>Isi</th></tr>
+  <tr><td><code>src/index.js</code></td><td>Setup Express. Urutan mount: <code>/api/webhook</code>, <code>/mobile</code>, <code>/proxy</code>, <code>/</code> (mobile harus sebelum <code>/</code>)</td></tr>
+  <tr><td><code>src/routes/checkin.js</code></td><td><code>createCheckinRouter({ auth })</code>: inti <code>/status</code> + <code>/checkin</code> + error handler, dipakai bersama</td></tr>
+  <tr><td><code>src/routes/proxy.js</code></td><td>Router web: <code>createCheckinRouter</code> + <code>appProxyAuth</code></td></tr>
+  <tr><td><code>src/routes/mobile.js</code></td><td>Router mobile: <code>createCheckinRouter</code> + <code>mobileAuth</code></td></tr>
+  <tr><td><code>src/lib/appProxy.js</code></td><td>Verifikasi signature App Proxy, mengisi <code>req.customerId</code></td></tr>
+  <tr><td><code>src/lib/mobileAuth.js</code></td><td>Cek Bearer token, parse <code>customerId</code> atau lookup email, mengisi <code>req.customerId</code></td></tr>
+  <tr><td><code>src/lib/loyalty.js</code></td><td>Aturan siklus (fungsi murni): <code>applyCheckin</code>, <code>buildView</code>, <code>effectiveStreak</code></td></tr>
+  <tr><td><code>src/lib/store.js</code></td><td>GraphQL: baca/tulis metafield (compare-and-set), <code>findCustomerIdByEmail</code>, <code>sendCheckinToFlow</code></td></tr>
+  <tr><td><code>src/lib/shopify.js</code></td><td>Client Admin GraphQL (retry, timeout, flag <code>maybeApplied</code>)</td></tr>
+  <tr><td><code>src/config.js</code></td><td>Env var + validasi <code>REWARD_CYCLE</code></td></tr>
+  <tr><td><code>extensions/daily-checkin-completed/</code></td><td>Definisi Flow trigger (field yang tersedia di workflow)</td></tr>
+  <tr><td><code>shopify.app.toml</code></td><td>Config app Shopify + App Proxy (<code>prefix apps</code>, <code>subpath rewards</code>)</td></tr>
+  <tr><td><code>scripts/proxy-request.js</code></td><td>Memanggil endpoint proxy dengan signature valid (untuk testing)</td></tr>
+  <tr><td><code>test/*.test.js</code></td><td>Unit test (<code>node --test</code>): signature, siklus, check-in, mobile</td></tr>
+  <tr><td><code>docs/API-Daily-Login.md</code></td><td>Spesifikasi API untuk vendor mobile</td></tr>
+</table>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="dev">12. Development &amp; deploy</h2>
+<pre class="code">npm install
+cp .env.example .env              # isi SHOPIFY_ADMIN_API, SHOPIFY_API_SECRET, MOBILE_API_TOKEN
+npm test                          # unit test
+npm run dev                       # nodemon, port 3000
+npm run proxy -- status 1234567890    # GET /status lokal dengan signature App Proxy
+npm run proxy -- checkin 1234567890   # PERHATIAN: memicu Flow sungguhan, poin Growave bertambah
+npm run proxy:prod -- status 1234567890
+
+# Backend: push ke repo, lalu Vercel build src/index.js (vercel.json: semua route -> src/index.js)
+# Flow trigger extension / config app:
+shopify app deploy                # atau: npm run deploy</pre>
+<p class="note">File ini tidak di-serve oleh Vercel karena semua route diarahkan ke Express. Buka langsung dari repo di browser.</p>
+
+</div>
+
+<script type="module">
+  import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs';
+  const dark = document.documentElement.dataset.theme === 'dark' ||
+    (document.documentElement.dataset.theme !== 'light' && matchMedia('(prefers-color-scheme: dark)').matches);
+  mermaid.initialize({ startOnLoad: true, deterministicIds: true, theme: dark ? 'dark' : 'default', securityLevel: 'strict', flowchart: { htmlLabels: true } });
+</script>
+</body>
+</html>
