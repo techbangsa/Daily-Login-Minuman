@@ -8,7 +8,8 @@
   HANDOVER DOC — Minuman Daily Login backend.
   Untuk agent / developer: semua diagram di bawah ditulis sebagai Mermaid source di dalam
   <pre class="mermaid">, jadi bisa dibaca langsung dari file ini tanpa render.
-  Buka di browser untuk melihat diagramnya (butuh internet untuk memuat Mermaid dari jsDelivr).
+  Lihat versi render-nya di https://daily-login-minuman.vercel.app/ (di-serve oleh GET / di src/index.js),
+  atau buka file ini langsung di browser. Butuh internet untuk memuat Mermaid dari jsDelivr.
 
   Ringkasan 1 paragraf:
   Request selalu dimulai dari client (popup theme lewat Shopify App Proxy, atau mobile app lewat /mobile/*).
@@ -270,10 +271,11 @@ flowchart LR
   <tr><th>Channel</th><th>Path di backend</th><th>Dipanggil dari</th><th>Identitas customer</th></tr>
   <tr><td>Web</td><td><code>GET /status</code> (alias lama <code>/balance</code>)<br><code>POST /checkin</code><br>Dipasang di <code>/proxy/*</code> dan <code>/*</code></td><td><code>https://&lt;toko&gt;/apps/rewards/*</code> lewat App Proxy</td><td><code>logged_in_customer_id</code> dari query yang ditandatangani Shopify (HMAC-SHA256 dengan <code>SHOPIFY_API_SECRET</code>)</td></tr>
   <tr><td>Mobile</td><td><code>GET /mobile/status</code><br><code>POST /mobile/checkin</code></td><td>Langsung ke <code>https://daily-login-minuman.vercel.app</code></td><td><code>Authorization: Bearer &lt;MOBILE_API_TOKEN&gt;</code> + <code>customerId</code> atau <code>email</code> (query untuk GET, JSON body untuk POST)</td></tr>
-  <tr><td>Lain</td><td><code>GET /</code>, <code>GET /api/webhook</code></td><td>–</td><td>Health check saja</td></tr>
+  <tr><td>Docs</td><td><code>GET /</code> (halaman ini, <code>index.html</code>)<br><code>GET /docs/*</code> (isi folder <code>docs/</code>)</td><td>Browser</td><td>Publik, tanpa auth</td></tr>
+  <tr><td>Lain</td><td><code>GET /api/webhook</code></td><td>–</td><td>Health check (JSON)</td></tr>
 </table>
 </div>
-<p>Response <code>data</code> sama di kedua channel: <code>streak</code>, <code>checkedInToday</code>, <code>today</code>, <code>cycle</code>, <code>completedInCycle</code>, <code>todayIndex</code>, <code>nextReward</code>. Spesifikasi lengkap untuk vendor mobile ada di <a href="API-Daily-Login.md"><code>docs/API-Daily-Login.md</code></a>.</p>
+<p>Response <code>data</code> sama di kedua channel: <code>streak</code>, <code>checkedInToday</code>, <code>today</code>, <code>cycle</code>, <code>completedInCycle</code>, <code>todayIndex</code>, <code>nextReward</code>. Spesifikasi lengkap untuk vendor mobile ada di <a href="docs/API-Daily-Login.md"><code>docs/API-Daily-Login.md</code></a> (atau <a href="docs/API-Daily-Login.pdf">PDF</a>).</p>
 
 <!-- ============================================================ -->
 <h2 id="api">7. API yang di-hit, dan oleh siapa</h2>
@@ -359,7 +361,7 @@ flowchart LR
 <div class="table-wrap">
 <table>
   <tr><th>File</th><th>Isi</th></tr>
-  <tr><td><code>src/index.js</code></td><td>Setup Express. Urutan mount: <code>/api/webhook</code>, <code>/mobile</code>, <code>/proxy</code>, <code>/</code> (mobile harus sebelum <code>/</code>)</td></tr>
+  <tr><td><code>src/index.js</code></td><td>Setup Express. <code>GET /</code> = halaman docs ini, <code>/docs</code> = static. Urutan mount: <code>/api/webhook</code>, <code>/mobile</code>, <code>/proxy</code>, <code>/</code> (mobile harus sebelum <code>/</code>)</td></tr>
   <tr><td><code>src/routes/checkin.js</code></td><td><code>createCheckinRouter({ auth })</code>: inti <code>/status</code> + <code>/checkin</code> + error handler, dipakai bersama</td></tr>
   <tr><td><code>src/routes/proxy.js</code></td><td>Router web: <code>createCheckinRouter</code> + <code>appProxyAuth</code></td></tr>
   <tr><td><code>src/routes/mobile.js</code></td><td>Router mobile: <code>createCheckinRouter</code> + <code>mobileAuth</code></td></tr>
@@ -373,7 +375,8 @@ flowchart LR
   <tr><td><code>shopify.app.toml</code></td><td>Config app Shopify + App Proxy (<code>prefix apps</code>, <code>subpath rewards</code>)</td></tr>
   <tr><td><code>scripts/proxy-request.js</code></td><td>Memanggil endpoint proxy dengan signature valid (untuk testing)</td></tr>
   <tr><td><code>test/*.test.js</code></td><td>Unit test (<code>node --test</code>): signature, siklus, check-in, mobile</td></tr>
-  <tr><td><code>docs/API-Daily-Login.md</code></td><td>Spesifikasi API untuk vendor mobile</td></tr>
+  <tr><td><code>index.html</code></td><td>Dokumen ini. Di-serve di <code>GET /</code></td></tr>
+  <tr><td><code>docs/API-Daily-Login.md</code> / <code>.pdf</code></td><td>Spesifikasi API untuk vendor mobile. Di-serve di <code>/docs/*</code></td></tr>
 </table>
 </div>
 
@@ -387,10 +390,11 @@ npm run proxy -- status 1234567890    # GET /status lokal dengan signature App P
 npm run proxy -- checkin 1234567890   # PERHATIAN: memicu Flow sungguhan, poin Growave bertambah
 npm run proxy:prod -- status 1234567890
 
-# Backend: push ke repo, lalu Vercel build src/index.js (vercel.json: semua route -> src/index.js)
+# Backend: push ke repo, lalu Vercel build src/index.js (vercel.json: semua route -> src/index.js,
+# includeFiles: index.html + docs/** supaya ikut ter-bundle)
 # Flow trigger extension / config app:
 shopify app deploy                # atau: npm run deploy</pre>
-<p class="note">File ini tidak di-serve oleh Vercel karena semua route diarahkan ke Express. Buka langsung dari repo di browser.</p>
+<p class="note">Halaman ini di-serve oleh Express di <code>GET /</code> (<code>https://daily-login-minuman.vercel.app/</code>), dan file di <code>docs/</code> di-serve di <code>/docs/*</code>. Kalau menambah file statis lain di luar folder tersebut, tambahkan juga ke <code>includeFiles</code> di <code>vercel.json</code>.</p>
 
 </div>
 

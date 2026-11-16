@@ -1,5 +1,6 @@
 // Loads .env and validates required settings before anything else.
 const config = require('./config');
+const path = require('path');
 const express = require('express');
 const webhookRoutes = require('./routes/webhook');
 const proxyRoutes = require('./routes/proxy');
@@ -11,10 +12,13 @@ app.disable('x-powered-by');
 app.use(express.urlencoded({ extended: true, limit: '10kb' }));
 app.use(express.json({ limit: '10kb' }));
 
-// Routes
-app.get("/", (req, res) => {
-  res.send("Minuman Daily Login Proxy API running 🚀");
+// Handover docs: index.html at "/", docs/ (API spec for the mobile vendor) at "/docs".
+// Both are listed in vercel.json "includeFiles" so they are bundled with the function.
+const ROOT = path.join(__dirname, '..');
+app.get('/', (req, res) => {
+  res.sendFile(path.join(ROOT, 'index.html'));
 });
+app.use('/docs', express.static(path.join(ROOT, 'docs')));
 
 // Use the webhook routes
 app.use('/api/webhook', webhookRoutes);

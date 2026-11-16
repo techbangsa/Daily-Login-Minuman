@@ -3,7 +3,8 @@
 Backend App Proxy (`/apps/rewards/*`) untuk popup daily check-in di theme.
 
 > Handover: arsitektur, diagram alur (Mermaid), error handling, env var, dan peta file ada di
-> [`docs/index.html`](docs/index.html). Buka di browser, atau baca langsung source Mermaid-nya.
+> [`index.html`](index.html), live di https://daily-login-minuman.vercel.app/. Bisa juga dibuka langsung di browser
+> atau dibaca source Mermaid-nya.
 
 ## Alur
 
